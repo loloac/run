@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buenos Aires Map</title>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<!-- Leaflet Routing Machine CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+  }
+  #map {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+  }
+
+  /* Keep Leaflet Routing Machine fully invisible - it only runs in the background
+     to compute the return route, never to display it. */
+  .leaflet-routing-container {
+    display: none !important;
+  }
+  .hidden-route-line {
+    display: none !important;
+  }
+
+  /* Compact "you are here" dot for the live user-location marker — small and
+     centered on its coordinate so it never blocks the view around it on mobile */
+  .user-location-dot {
+    width: 18px;
+    height: 18px;
+    background-color: #1976d2;
+    border: 3px solid #ffffff;
+    border-radius: 50%;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Start Run button, centered on screen, overlaid on the map -->
+<div class="fixed inset-0 z-[9999] flex items-center justify-center pointer-events-none">
+  <button
+    id="startRunBtn"
+    class="pointer-events-auto bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-2xl px-14 py-8 rounded-full shadow-2xl transition-transform"
+  >
+    Start Run
+  </button>
+</div>
+
+<!-- End Run button, fixed top-left, hidden until a run is in progress -->
+<button
+  id="endRunBtn"
+  class="hidden fixed top-4 left-4 z-[9999] bg-red-600 hover:bg-red-700 active:scale-95 text-white font-bold text-lg px-8 py-5 rounded-xl shadow-2xl transition-transform"
+>
+  End Run
+</button>
+
+<!-- Live run dashboard, overlaid at the bottom of the map, visible only while recording -->
+<div
+  id="runDashboard"
+  class="hidden fixed inset-x-0 bottom-0 z-[9999] bg-gray-900/90 px-4 pt-4 pb-6 shadow-2xl backdrop-blur-sm"
+>
+  <div class="mx-auto grid max-w-md grid-cols-3 gap-4 text-center text-white">
+    <div>
+      <p class="text-xs text-gray-400">Run Time</p>
+      <p id="runTimeField" class="text-2xl font-bold tabular-nums">0:00</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-400">Distance Run</p>
+      <p id="distanceRunField" class="text-2xl font-bold tabular-nums">0 m</p>
+    </div>
+    <div>
+      <p id="returnDistanceLabel" class="text-xs leading-tight text-gray-400">Total Distance If Return Starts</p>
+      <p id="returnDistanceField" class="text-2xl font-bold tabular-nums">0 m</p>
+    </div>
+  </div>
+
+  <div class="mx-auto mt-4 max-w-md">
+    <button
+      id="startWayBackBtn"
+      class="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-gray-900 font-bold text-lg px-6 py-4 rounded-xl shadow-lg transition-transform"
+    >
+      Start Way Back
+    </button>
+  </div>
+</div>
+
+<!-- Run summary modal, hidden until a run ends -->
+<div
+  id="runSummaryModal"
+  class="hidden fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4"
+>
+  <div class="relative w-full max-w-sm rounded-2xl bg-white p-8 shadow-2xl">
+    <button
+      id="closeModalBtn"
+      class="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-800 text-lg leading-none"
+      aria-label="Close"
+    >
+      &times;
+    </button>
+
+    <h2 class="mb-6 text-xl font-bold text-gray-900">Run Summary</h2>
+
+    <div class="space-y-4">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-gray-500">Total Distance</label>
+        <div id="totalDistanceField" class="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-lg font-semibold text-gray-900">
+          &mdash;
+        </div>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-gray-500">Time Elapsed</label>
+        <div id="timeElapsedField" class="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-lg font-semibold text-gray-900">
+          &mdash;
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Leaflet Routing Machine JS -->
+<script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
+<script>
+  // Buenos Aires, Argentina coordinates
+  const buenosAires = [-34.6037, -58.3816];
+
+  const map = L.map('map').setView(buenosAires, 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+
+  L.marker(buenosAires)
+    .addTo(map)
+    .bindPopup('Buenos Aires, Argentina')
+    .openPopup();
+
+  // --- Live GPS tracking ---
+
+  // Sequentially stores each incoming [lat, lng] reading
+  const pathCoords = [];
+
+  // Polyline that traces the recorded path, updated as new points arrive
+  const pathLine = L.polyline([], { color: '#1976d2', weight: 4 }).addTo(map);
+
+  // Marker showing the most recent known position
+  let currentMarker = null;
+
+  // Custom "you are here" marker: a small circular dot instead of Leaflet's
+  // default pin, centered exactly on the coordinate rather than anchored at
+  // a tip — so it stays compact and never obstructs the view on mobile
+  const userLocationIcon = L.divIcon({
+    className: 'user-location-marker',
+    html: '<div class="user-location-dot"></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+
+  // Great-circle distance between two [lat, lng] points, in meters
+  function haversineDistance(coord1, coord2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371000; // Earth's mean radius in meters
+
+    const [lat1, lon1] = coord1;
+    const [lat2, lon2] = coord2;
+
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
+
+  function handlePosition(position) {
+    const { latitude, longitude } = position.coords;
+    const point = [latitude, longitude];
+
+    // Only record the path and accumulate distance while actively recording
+    if (isRecording === true) {
+      // Permanently latch the first GPS fix received after Start Run was pressed
+      if (startCoordinates === null) {
+        startCoordinates = point;
+      }
+
+      if (pathCoords.length > 0) {
+        const lastPoint = pathCoords[pathCoords.length - 1];
+        totalDistance += haversineDistance(lastPoint, point);
+      }
+
+      pathCoords.push(point);
+      pathLine.setLatLngs(pathCoords);
+      saveRunState();
+    }
+
+    // Position tracking (marker + map center) continues regardless of recording state
+    if (!currentMarker) {
+      currentMarker = L.marker(point, { icon: userLocationIcon }).addTo(map).bindPopup('Current position');
+    } else {
+      currentMarker.setLatLng(point);
+    }
+
+    // Recenter the map on the latest position — zoom in tight while actively
+    // recording a run, otherwise just follow at whatever zoom is already set
+    if (isRecording === true) {
+      map.setView([latitude, longitude], 17);
+    } else {
+      map.setView(point, map.getZoom());
+    }
+  }
+
+  function handlePositionError(error) {
+    console.error('Geolocation error:', error.message);
+  }
+
+  let watchId = null;
+
+  if ('geolocation' in navigator) {
+    watchId = navigator.geolocation.watchPosition(handlePosition, handlePositionError, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 15000
+    });
+  } else {
+    console.error('Geolocation is not supported by this browser.');
+  }
+
+  // --- Silent return-route calculation (Leaflet Routing Machine) ---
+
+  // Most recently calculated route back to startCoordinates; not drawn anywhere
+  let latestReturnRoute = null;
+
+  // The control is added to the map (LRM requires this to function) but its
+  // container is hidden via CSS and its line is given a class that is also
+  // hidden via CSS, so nothing about it is ever visible to the user.
+  const returnRoutingControl = L.Routing.control({
+    waypoints: [],
+    router: L.Routing.osrmv1({ profile: 'foot' }), // walking directions, not driving
+    createMarker: () => null, // suppress the default start/end pin markers
+    addWaypoints: false,
+    draggableWaypoints: false,
+    fitSelectedRoutes: false,
+    lineOptions: {
+      styles: [{ className: 'hidden-route-line' }]
+    }
+  }).addTo(map);
+
+  returnRoutingControl.on('routesfound', (e) => {
+    latestReturnRoute = e.routes[0]; // fastest/first route back to the start
+  });
+
+  returnRoutingControl.on('routingerror', (e) => {
+    console.error('Routing error:', e.error);
+  });
+
+  // Kicks off a (silent) route calculation from the newest GPS fix back to startCoordinates
+  function calculateReturnRoute() {
+    if (isRecording !== true || startCoordinates === null || currentMarker === null) {
+      return;
+    }
+
+    const current = currentMarker.getLatLng();
+    const from = L.latLng(current.lat, current.lng);
+    const to = L.latLng(startCoordinates[0], startCoordinates[1]);
+
+    returnRoutingControl.setWaypoints([from, to]);
+  }
+
+  // A one-off, definitive calculation from the current live position back to
+  // startCoordinates — unlike the background pings, this route is explicitly
+  // allowed to render as a visible polyline on the map.
+  function drawFinalReturnRoute() {
+    if (startCoordinates === null || currentMarker === null) {
+      return;
+    }
+
+    const current = currentMarker.getLatLng();
+    const from = L.latLng(current.lat, current.lng);
+    const to = L.latLng(startCoordinates[0], startCoordinates[1]);
+
+    // Swap the hidden-line class for real, visible styling
+    returnRoutingControl.options.lineOptions = {
+      styles: [{ color: '#f59e0b', weight: 5, opacity: 0.9 }]
+    };
+
+    returnRoutingControl.setWaypoints([from, to]);
+  }
+
+  // --- Run recording state ---
+
+  let isRecording = false;
+  let startTime = null;
+  let totalDistance = 0; // meters, accumulated via Haversine distance while recording
+  let startCoordinates = null; // [lat, lng] of the first GPS fix captured for the current session
+  let dashboardInterval = null; // handle for the 1-second dashboard refresh loop
+  let routingInterval = null; // handle for the 15-second background return-route calculation
+
+  const startRunBtn = document.getElementById('startRunBtn');
+  const endRunBtn = document.getElementById('endRunBtn');
+  const runSummaryModal = document.getElementById('runSummaryModal');
+  const closeModalBtn = document.getElementById('closeModalBtn');
+  const totalDistanceField = document.getElementById('totalDistanceField');
+  const timeElapsedField = document.getElementById('timeElapsedField');
+  const runDashboard = document.getElementById('runDashboard');
+  const runTimeField = document.getElementById('runTimeField');
+  const distanceRunField = document.getElementById('distanceRunField');
+  const returnDistanceField = document.getElementById('returnDistanceField');
+  const returnDistanceLabel = document.getElementById('returnDistanceLabel');
+  const startWayBackBtn = document.getElementById('startWayBackBtn');
+
+  // --- Persisting run state, so a backgrounded/discarded tab can resume ---
+  // Mobile browsers heavily throttle (or fully suspend) JS in a backgrounded
+  // tab, and can discard the tab's memory entirely under memory pressure —
+  // locking the screen is a common trigger. When that happens, reopening the
+  // tab causes a full page reload, wiping every in-memory variable. Saving a
+  // snapshot after every recorded point lets us detect that on reload and
+  // pick the run back up instead of silently losing it.
+
+  const RUN_STATE_KEY = 'runTrackerActiveRun';
+
+  function saveRunState() {
+    try {
+      localStorage.setItem(RUN_STATE_KEY, JSON.stringify({
+        isRecording,
+        startTime,
+        totalDistance,
+        startCoordinates,
+        pathCoords
+      }));
+    } catch (err) {
+      console.error('Could not save run state:', err);
+    }
+  }
+
+  function clearSavedRunState() {
+    try {
+      localStorage.removeItem(RUN_STATE_KEY);
+    } catch (err) {
+      console.error('Could not clear saved run state:', err);
+    }
+  }
+
+  function restoreRunState() {
+    let saved;
+    try {
+      const raw = localStorage.getItem(RUN_STATE_KEY);
+      if (!raw) return;
+      saved = JSON.parse(raw);
+    } catch (err) {
+      console.error('Could not read saved run state:', err);
+      return;
+    }
+
+    if (!saved || saved.isRecording !== true) {
+      return; // nothing in progress to resume
+    }
+
+    // Rehydrate the run's data
+    isRecording = true;
+    startTime = saved.startTime;
+    totalDistance = saved.totalDistance || 0;
+    startCoordinates = saved.startCoordinates || null;
+
+    if (Array.isArray(saved.pathCoords) && saved.pathCoords.length > 0) {
+      pathCoords.push(...saved.pathCoords);
+      pathLine.setLatLngs(pathCoords);
+      map.setView(pathCoords[pathCoords.length - 1], 17);
+    }
+
+    // Rebuild the UI to look like a run is already underway
+    startRunBtn.classList.add('hidden');
+    endRunBtn.classList.remove('hidden');
+    runDashboard.classList.remove('hidden');
+
+    updateDashboard();
+    dashboardInterval = setInterval(updateDashboard, 1000);
+
+    calculateReturnRoute();
+    routingInterval = setInterval(calculateReturnRoute, 15000);
+  }
+
+  startRunBtn.addEventListener('click', () => {
+    startRunBtn.classList.add('hidden');
+    endRunBtn.classList.remove('hidden');
+    runDashboard.classList.remove('hidden');
+
+    isRecording = true;
+    startTime = Date.now();
+    startCoordinates = null; // will latch onto the next GPS fix received
+    saveRunState();
+
+    updateDashboard(); // paint immediately instead of waiting a full second
+    dashboardInterval = setInterval(updateDashboard, 1000);
+
+    calculateReturnRoute(); // kick off an initial background calculation
+    routingInterval = setInterval(calculateReturnRoute, 15000);
+  });
+
+  // Formats a duration in milliseconds as M:SS
+  function formatElapsedTime(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // Formats a distance in meters, switching to km past 1000 m
+  function formatDistance(meters) {
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(2)} km`;
+    }
+    return `${Math.round(meters)} m`;
+  }
+
+  // Refreshes the Run Time, Distance Run, and Total Distance if Return Starts readouts
+  function updateDashboard() {
+    const elapsedMs = Date.now() - startTime;
+    runTimeField.textContent = formatElapsedTime(elapsedMs);
+
+    distanceRunField.textContent = formatDistance(totalDistance);
+
+    // Total Distance If Return Starts = distance already run + the routed
+    // return-leg distance from the most recent background routing ping
+    if (latestReturnRoute !== null) {
+      const returnLegDistance = latestReturnRoute.summary.totalDistance; // meters
+      returnDistanceField.textContent = formatDistance(totalDistance + returnLegDistance);
+    }
+  }
+
+  endRunBtn.addEventListener('click', () => {
+    isRecording = false;
+    endRunBtn.classList.add('hidden');
+    runDashboard.classList.add('hidden');
+    clearInterval(dashboardInterval);
+    clearInterval(routingInterval);
+    clearSavedRunState();
+
+    // Remove any visible return polyline Leaflet Routing Machine drew, and
+    // restore its styling so a future run's background pings stay silent
+    returnRoutingControl.setWaypoints([]);
+    returnRoutingControl.options.lineOptions = {
+      styles: [{ className: 'hidden-route-line' }]
+    };
+
+    // Reset the readout label back to its default wording
+    returnDistanceLabel.textContent = 'Total Distance If Return Starts';
+
+    const elapsedMs = Date.now() - startTime;
+    timeElapsedField.textContent = formatElapsedTime(elapsedMs);
+    totalDistanceField.textContent = formatDistance(totalDistance);
+
+    runSummaryModal.classList.remove('hidden');
+  });
+
+  startWayBackBtn.addEventListener('click', () => {
+    // Freeze the background routing ping — no more recalculating the route home
+    clearInterval(routingInterval);
+    startWayBackBtn.classList.add('hidden');
+
+    // Relabel the readout now that its meaning has shifted from "if you turned
+    // back now" to "what the total will be once you actually get back"
+    returnDistanceLabel.textContent = 'Distance Ran Once Arrived';
+
+    // One last, definitive calculation — this one is allowed to actually draw the route
+    drawFinalReturnRoute();
+  });
+
+  closeModalBtn.addEventListener('click', () => {
+    runSummaryModal.classList.add('hidden');
+
+    // Clear the drawn path from the map
+    pathLine.setLatLngs([]);
+
+    // Empty the saved coordinates array in place (it's a const reference)
+    pathCoords.length = 0;
+
+    // Reset distance tracking
+    totalDistance = 0;
+
+    // Clear the latched starting point so the next run captures a fresh one
+    startCoordinates = null;
+
+    clearSavedRunState();
+
+    // Reset background routing state
+    returnRoutingControl.setWaypoints([]);
+    latestReturnRoute = null;
+
+    // Restore the hidden-line styling so next run's background pings stay silent
+    returnRoutingControl.options.lineOptions = {
+      styles: [{ className: 'hidden-route-line' }]
+    };
+
+    // Restore the Start Way Back button and its readout label for the next run
+    startWayBackBtn.classList.remove('hidden');
+    returnDistanceLabel.textContent = 'Total Distance If Return Starts';
+
+    // Hide the entire dashboard container so the reset is complete
+    runDashboard.classList.add('hidden');
+
+    // Bring back the Start Run button for a fresh run
+    startRunBtn.classList.remove('hidden');
+  });
+
+  // On load, check whether a run was in progress when this page was last
+  // torn down (e.g. the tab got discarded while the phone was locked) and
+  // resume it if so.
+  restoreRunState();
+</script>
+
+</body>
+</html>
